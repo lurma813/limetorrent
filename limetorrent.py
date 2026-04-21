@@ -46,8 +46,9 @@ settings = {
     # Prefer uploading over downloading
     "seed_choking_algorithm":     lt.seed_choking_algorithm_t.fastest_upload,
     # Keep seeding even after ratio > 0 (application manages ratio policy)
-    "share_ratio_limit":          0.0,
-    "seed_time_ratio_limit":      0.0,
+    # These expect int in libtorrent's settings_pack (0 = disabled)
+    "share_ratio_limit":          0,
+    "seed_time_ratio_limit":      0,
     "seed_time_limit":            0,
     # Global bandwidth limits (0 = unlimited)
     "upload_rate_limit":          GLOBAL_UPLOAD_LIMIT,
