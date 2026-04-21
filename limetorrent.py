@@ -41,7 +41,8 @@ settings = {
     # ── Seed-server tuning ──────────────────────────────────────────────────
     # Maximise peer slots for seeding
     "connections_limit":          int(os.environ.get("CONNECTIONS_LIMIT", 500)),
-    "upload_slots_per_torrent":   int(os.environ.get("UPLOAD_SLOTS",      8)),
+    # NOTE: upload_slots_per_torrent is NOT a valid settings_pack key.
+    #       It is applied per-torrent inside add_handle() via h.set_max_uploads().
     # Prefer uploading over downloading
     "seed_choking_algorithm":     lt.seed_choking_algorithm_t.fastest_upload,
     # Keep seeding even after ratio > 0 (application manages ratio policy)
@@ -197,11 +198,16 @@ def resolve_handle(id_: str) -> lt.torrent_handle | None:
         return torrents.get(id_)
 
 
+UPLOAD_SLOTS = int(os.environ.get("UPLOAD_SLOTS", 8))
+
+
 def add_handle(h: lt.torrent_handle) -> str:
     """
-    Resume handle, wait for hash, register it.
+    Resume handle, apply per-torrent seed settings, wait for hash, register it.
     Raises RuntimeError if hash cannot be determined.
     """
+    # set_max_uploads is the correct per-handle API (not a settings_pack key)
+    h.set_max_uploads(UPLOAD_SLOTS)
     h.resume()
     for _ in range(100):          # up to 10 s
         s  = h.status()
