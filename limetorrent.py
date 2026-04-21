@@ -129,26 +129,26 @@ def short_name(name: str, maxlen: int = 40) -> str:
 
 
 def fmt_bytes(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
+    for unit in ("B", "kB", "mB", "gB", "tB"):
         if n < 1024:
             return f"{n:.1f} {unit}"
         n /= 1024
-    return f"{n:.1f} PB"
+    return f"{n:.1f} pB"
 
 
 def fmt_speed(bps: float) -> str:
-    return fmt_bytes(int(bps)) + "/s"
+    return fmt_bytes(int(bps)) + "ps"
 
 
 STATE_MAP = {
-    lt.torrent_status.states.queued_for_checking:  "queued",
-    lt.torrent_status.states.checking_files:       "checking",
-    lt.torrent_status.states.downloading_metadata: "metadata",
-    lt.torrent_status.states.downloading:          "downloading",
-    lt.torrent_status.states.finished:             "seeding",
-    lt.torrent_status.states.seeding:              "seeding",
-    lt.torrent_status.states.allocating:           "allocating",
-    lt.torrent_status.states.checking_resume_data: "checking",
+    lt.torrent_status.states.queued_for_checking:  "Queued",
+    lt.torrent_status.states.checking_files:       "Checking",
+    lt.torrent_status.states.downloading_metadata: "Metadata",
+    lt.torrent_status.states.downloading:          "Downloading",
+    lt.torrent_status.states.finished:             "Seeding",
+    lt.torrent_status.states.seeding:              "Seeding",
+    lt.torrent_status.states.allocating:           "Allocating",
+    lt.torrent_status.states.checking_resume_data: "Checking",
 }
 
 
@@ -227,8 +227,8 @@ HEADER = (
     "{:<12} | {:<18} | {:<18} | {:<22} | {:<7} | {:<7} | {:<7} | {}\n"
     "{}\n"
 ).format(
-    "Status", "Down Spd/Total", "Up Spd/Total",
-    "Got/Size", "Peers", "Seeds", "Ratio", "Name (<=40 chars)",
+    "Status", "Down Spd | Total", "Up Spd | Total",
+    "Got | Size", "Peers", "Seeds", "Ratio", "Name",
     "-" * 130,
 )
 
