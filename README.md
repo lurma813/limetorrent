@@ -1,4 +1,4 @@
-# 🌱 TorrentFlask
+# 🌱 LimeTorrent
 
 A lightweight **seed-server optimized** torrent manager exposed as a REST API, built with [Flask](https://flask.palletsprojects.com/) and [libtorrent](https://libtorrent.org/).
 
