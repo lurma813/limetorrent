@@ -1,5 +1,4 @@
 # 🌱 LimeTorrent
-
 A lightweight **seed-server optimized** torrent manager exposed as a REST API, built with [Flask](https://flask.palletsprojects.com/) and [libtorrent](https://libtorrent.org/).
 
 Designed for personal use on localhost — add torrents via magnet/file, monitor in real-time, manage bandwidth, and keep seeding automatically with resume persistence across restarts.
@@ -78,7 +77,7 @@ The server starts on `http://127.0.0.1:5000` by default.
 | `GLOBAL_UPLOAD_LIMIT` | `0` | Session upload cap in bytes/s (0 = unlimited) |
 | `GLOBAL_DOWNLOAD_LIMIT` | `0` | Session download cap in bytes/s (0 = unlimited) |
 | `CONNECTIONS_LIMIT` | `500` | Max peer connections |
-| `UPLOAD_SLOTS` | `8` | Upload slots per torrent |
+| `UPLOAD_SLOTS` | `8` | Upload slots per torrent (applied via `set_max_uploads()`) |
 
 Example:
 ```bash
@@ -204,7 +203,7 @@ Returns the `.torrent` file as a download (`application/x-bittorrent`).
 The following libtorrent settings are applied at startup for seed-optimised performance:
 
 - `seed_choking_algorithm = fastest_upload` — prioritise peers with highest upload speed
-- `upload_slots_per_torrent = 8` — more simultaneous upload connections
+- `upload_slots_per_torrent = 8` — lebih banyak koneksi upload simultan (diterapkan via `h.set_max_uploads()` per torrent, bukan session settings)
 - `connections_limit = 500` — high peer ceiling
 - `share_ratio_limit = 0` / `seed_time_limit = 0` — never stop seeding based on ratio or time
 - LSD + DHT + UPnP + NAT-PMP enabled for maximum peer discovery
