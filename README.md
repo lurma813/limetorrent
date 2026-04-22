@@ -1,225 +1,267 @@
-# 🌱 LimeTorrent
-A lightweight **seed-server optimized** torrent manager exposed as a REST API, built with [Flask](https://flask.palletsprojects.com/) and [libtorrent](https://libtorrent.org/).
+# 🌿 LimeTorrent — TorrentFlask
 
-Designed for personal use on localhost — add torrents via magnet/file, monitor in real-time, manage bandwidth, and keep seeding automatically with resume persistence across restarts.
+**TorrentFlask** is a lightweight, seed-server-optimized BitTorrent manager built on top of [libtorrent 2.0.x](https://libtorrent.org/) and [Flask 3.x](https://flask.palletsprojects.com/). It exposes a clean REST API so you can manage torrents programmatically — add, stop, delete, monitor, seed, and create `.torrent` files — all over HTTP.
 
----
-
-## Features
-
-- ✅ Add torrents via magnet link or `.torrent` file
-- 🌱 Seed-server mode — optimised settings for maximum upload throughput
-- 💾 **Resume persistence** — torrents survive server restarts automatically
-- 📊 **Ratio tracking** — upload/download ratio per torrent
-- 🔄 **Force re-announce** — notify trackers immediately that you're seeding
-- 🖥️ Live terminal monitor (`curl -N /monitor`)
-- ⚡ Per-torrent AND global upload/download speed limits
-- 🔁 Pause, resume, recheck, remove (with optional file deletion)
-- 🏗️ Create `.torrent` files from local paths
-- 📡 Tracker status inspection per torrent
+Comes with a terminal live monitor (`monitor.py`) that auto-refreshes in place without cluttering your screen.
 
 ---
 
-## Requirements
+## ✨ Features
 
-- Python **3.11+**
-- `libtorrent` system library (see install notes below)
+- **Add** torrents via magnet links or `.torrent` file upload
+- **Stop** torrents by info-hash **or** by `.torrent` file — without losing progress
+- **Delete** torrents by info-hash **or** by `.torrent` file — optionally wiping downloaded data
+- **Pause / Resume** individual torrents
+- **Per-torrent and global speed limits**
+- **Force recheck** and **force re-announce**
+- **Create** `.torrent` files from local paths
+- **Seed** local data immediately without downloading
+- **Resume persistence** across restarts (libtorrent 2.0.x `write_resume_data_buf` / `read_resume_data` API — no deprecated calls)
+- **Live streaming monitor** endpoint (`/monitor`) for `curl -N`
+- **`monitor.py`** — standalone terminal monitor with configurable URL, interval, and color control
 
 ---
 
-## Installation
+## 📋 Requirements
 
-### 1. Install system libtorrent (recommended)
+- Python 3.10+
+- `libtorrent` 2.0.11 (Python bindings)
+- `flask` 3.x
 
-**Debian / Ubuntu:**
-```bash
-sudo apt install python3-libtorrent
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S libtorrent-rasterbar
-pip install python-libtorrent
-```
-
-**macOS (Homebrew):**
-```bash
-brew install libtorrent-rasterbar
-pip install python-libtorrent
-```
-
-### 2. Install Python dependencies
+Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install flask
+# libtorrent Python bindings — install via your distro or build from source:
+# Ubuntu/Debian:
+apt install python3-libtorrent
+# or via pip (unofficial wheel):
+pip install libtorrent
 ```
 
 ---
 
-## Running
+## 🚀 Quick Start
 
 ```bash
+# Default: binds to 127.0.0.1:5000
 python limetorrent.py
+
+# Custom host/port
+python limetorrent.py --host 0.0.0.0 --port 8080
+
+# With speed limits (bytes/s)
+python limetorrent.py --upload-limit 1048576 --download-limit 10485760
+
+# All options
+python limetorrent.py --help
 ```
 
-The server starts on `http://127.0.0.1:5000` by default.
+### Environment variables (alternative to CLI flags)
 
-### Environment Variables
+| Variable              | Default              | Description                          |
+|-----------------------|----------------------|--------------------------------------|
+| `HOST`                | `127.0.0.1`          | Bind address                         |
+| `PORT`                | `5000`               | Bind port                            |
+| `DOWNLOAD_DIR`        | `/tmp/torrents/downloads` | Download destination           |
+| `TORRENT_DIR`         | `/tmp/torrents/created`   | Output dir for created `.torrent` files |
+| `RESUME_DIR`          | `/tmp/torrents/resume`    | Resume data directory          |
+| `GLOBAL_UPLOAD_LIMIT` | `0`                  | Upload bytes/s (0 = unlimited)       |
+| `GLOBAL_DOWNLOAD_LIMIT` | `0`                | Download bytes/s (0 = unlimited)     |
+| `UPLOAD_SLOTS`        | `8`                  | Max upload slots per torrent         |
+| `CONNECTIONS_LIMIT`   | `500`                | Max total connections                |
+| `LISTEN_INTERFACES`   | `0.0.0.0:6881`       | libtorrent listen interface          |
 
-| Variable | Default | Description |
-|---|---|---|
-| `HOST` | `127.0.0.1` | Bind address |
-| `PORT` | `5000` | HTTP port |
-| `DOWNLOAD_DIR` | `/tmp/torrents/downloads` | Default save path |
-| `TORRENT_DIR` | `/tmp/torrents/created` | Output path for created `.torrent` files |
-| `RESUME_DIR` | `/tmp/torrents/resume` | Resume data persistence directory |
-| `LISTEN_INTERFACES` | `0.0.0.0:6881` | libtorrent listen interface |
-| `GLOBAL_UPLOAD_LIMIT` | `0` | Session upload cap in bytes/s (0 = unlimited) |
-| `GLOBAL_DOWNLOAD_LIMIT` | `0` | Session download cap in bytes/s (0 = unlimited) |
-| `CONNECTIONS_LIMIT` | `500` | Max peer connections |
-| `UPLOAD_SLOTS` | `8` | Upload slots per torrent (applied via `set_max_uploads()`) |
-
-Example:
-```bash
-DOWNLOAD_DIR=/data/seed GLOBAL_UPLOAD_LIMIT=10485760 python limetorrent.py
-# Upload capped at 10 MB/s
-```
+CLI flags always take priority over environment variables.
 
 ---
 
-## API Reference
+## 🖥️ Live Monitor (`monitor.py`)
 
-### Add Torrent
-
-**Via magnet link**
-```http
-POST /add/magnet
-Content-Type: application/json
-
-{"magnet": "magnet:?xt=urn:btih:...", "save_path": "/optional/path"}
-```
-
-**Via `.torrent` file** (multipart)
 ```bash
-curl -F "torrent=@file.torrent" -F "save_path=/data/seed" http://localhost:5000/add/file
+# Monitor local instance (default http://localhost:5000)
+python monitor.py
+
+# Monitor a remote server
+python monitor.py --url http://192.168.1.10:8080
+
+# Custom refresh interval (seconds)
+python monitor.py --url http://myserver.com:5000 --interval 5
+
+# Single snapshot (no loop)
+python monitor.py --once
+
+# Disable colors (useful for piping / logging)
+python monitor.py --no-color
+
+# Via environment variable
+TORRENTFLASK_URL=http://myserver.com:5000 python monitor.py
 ```
+
+The monitor rewrites the display in place using ANSI cursor control — output never accumulates.
 
 ---
 
-### List & Status
+## 📡 API Reference
 
-```http
-GET /list                   # All torrents (JSON array)
-GET /status/<hash>          # Single torrent detail
-GET /health                 # Server health + session info
-```
-
----
-
-### Live Monitor
+### Add torrents
 
 ```bash
+# Add via magnet link
+curl -X POST http://localhost:5000/add/magnet \
+  -H "Content-Type: application/json" \
+  -d '{"magnet": "magnet:?xt=urn:btih:...", "save_path": "/data"}'
+
+# Add via .torrent file
+curl -X POST http://localhost:5000/add/file \
+  -F torrent=@ubuntu.torrent \
+  -F save_path=/data
+```
+
+### List & status
+
+```bash
+# List all torrents
+curl http://localhost:5000/list
+
+# Single torrent status
+curl http://localhost:5000/status/<hash>
+```
+
+### Stop a torrent
+
+Stopping is different from pausing: it **disables `auto_managed`** so libtorrent will not automatically restart the torrent. Progress and resume data are preserved.
+
+```bash
+# Stop by info-hash
+curl -X POST http://localhost:5000/stop/<hash>
+
+# Stop by .torrent file (useful when you have the file but not the hash)
+curl -X POST http://localhost:5000/stop/file \
+  -F torrent=@ubuntu.torrent
+```
+
+### Remove / Delete a torrent
+
+```bash
+# Remove from session only (keep downloaded files)
+curl -X DELETE http://localhost:5000/remove/<hash>
+
+# Remove AND delete downloaded data
+curl -X DELETE "http://localhost:5000/remove/<hash>?delete_files=1"
+
+# Remove by .torrent file (keep files)
+curl -X DELETE http://localhost:5000/remove/file \
+  -F torrent=@ubuntu.torrent
+
+# Remove by .torrent file AND delete data
+curl -X DELETE "http://localhost:5000/remove/file?delete_files=1" \
+  -F torrent=@ubuntu.torrent
+```
+
+### Pause / Resume
+
+```bash
+# Pause (auto_managed stays on — libtorrent may restart it)
+curl -X POST http://localhost:5000/pause/<hash>
+
+# Resume a paused or stopped torrent
+curl -X POST http://localhost:5000/resume/<hash>
+```
+
+### Speed limits
+
+```bash
+# Per-torrent limits (bytes/s; use -1 for unlimited)
+curl -X POST http://localhost:5000/limit/<hash> \
+  -H "Content-Type: application/json" \
+  -d '{"download_limit": 524288, "upload_limit": 1048576}'
+
+# Global limits (bytes/s; use 0 for unlimited)
+curl -X POST http://localhost:5000/limit/global \
+  -H "Content-Type: application/json" \
+  -d '{"upload_limit": 2097152, "download_limit": 0}'
+```
+
+### Other operations
+
+```bash
+# Force recheck
+curl -X POST http://localhost:5000/recheck/<hash>
+
+# Force re-announce (all trackers)
+curl -X POST http://localhost:5000/announce/<hash>
+
+# Force re-announce (specific tracker by index)
+curl -X POST "http://localhost:5000/announce/<hash>?tracker_idx=0"
+
+# List trackers
+curl http://localhost:5000/trackers/<hash>
+
+# Get magnet URI
+curl http://localhost:5000/magnet/<hash>
+
+# Persist resume data for all torrents
+curl -X POST http://localhost:5000/save
+
+# Health check
+curl http://localhost:5000/health
+
+# Live streaming monitor (terminal)
 curl -N http://localhost:5000/monitor
-# Optional: ?interval=3 (refresh every 3 seconds)
+curl -N "http://localhost:5000/monitor?interval=5"
 ```
 
-Output columns: `Status | Down Spd/Total | Up Spd/Total | Got/Size | Peers | Seeds | Ratio | Name`
+### Create & seed
 
----
+```bash
+# Create a .torrent from a local path
+curl -X POST http://localhost:5000/create \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/data/myfiles", "tracker": "udp://tracker.example.com:6969", "comment": "My release"}'
 
-### Control
-
-```http
-POST   /pause/<hash>        # Pause + save resume data
-POST   /resume/<hash>       # Resume
-DELETE /remove/<hash>       # Remove torrent
-DELETE /remove/<hash>?delete_files=1   # Remove + wipe files
-POST   /recheck/<hash>      # Force integrity recheck
-POST   /announce/<hash>     # Force re-announce to trackers
-POST   /announce/<hash>?tracker_idx=0  # Target specific tracker
-GET    /trackers/<hash>     # List tracker status
-GET    /magnet/<hash>       # Get magnet link
-POST   /save                # Persist resume data for all torrents
+# Seed local data immediately (no download needed)
+curl -X POST http://localhost:5000/seed \
+  -H "Content-Type: application/json" \
+  -d '{"torrent_path": "/path/to/file.torrent", "data_path": "/data/myfiles"}'
 ```
 
 ---
 
-### Speed Limits
+## 🔑 Stop vs Pause vs Remove — when to use which
 
-**Per-torrent** (bytes/s, `-1` = unlimited):
-```http
-POST /limit/<hash>
-Content-Type: application/json
+| Action      | Connections | Auto-restart | Progress kept | Resume data | Files on disk |
+|-------------|:-----------:|:------------:|:-------------:|:-----------:|:-------------:|
+| **pause**   | dropped     | ✅ yes        | ✅ yes         | saved       | ✅ kept       |
+| **stop**    | dropped     | ❌ no         | ✅ yes         | saved       | ✅ kept       |
+| **remove**  | dropped     | ❌ n/a        | ❌ removed     | deleted     | ✅ kept       |
+| **remove?delete_files=1** | dropped | ❌ n/a | ❌ removed | deleted | ❌ deleted |
 
-{"download_limit": 5242880, "upload_limit": -1}
+---
+
+## 🧱 Architecture notes
+
+- **libtorrent 2.0.x compliance** — no deprecated APIs:
+  - `write_resume_data_buf()` / `read_resume_data()` instead of `bencode(alert.resume_data)`
+  - `h.set_flags()` / `h.unset_flags()` with `lt.torrent_flags.*` instead of `h.auto_managed()`
+  - `lt.torrent_handle.delete_files` flag instead of deprecated `lt.options_t.delete_files`
+  - `info_hashes.has_v1()` / `.v1` / `.has_v2()` / `.v2` for hash resolution (v1+v2 hybrid torrent support)
+- **Thread-safe handle registry** via `threading.Lock`
+- **Resume persistence** survives restarts — incomplete torrents continue from where they left off
+- **Graceful shutdown** via `atexit` — resume data saved before process exits
+
+---
+
+## 📁 Project structure
+
+```
+limetorrent.py   # Flask REST API server
+monitor.py       # Standalone terminal live monitor
+README.md        # This file
 ```
 
-**Global session** (bytes/s, `0` = unlimited):
-```http
-POST /limit/global
-Content-Type: application/json
-
-{"upload_limit": 10485760, "download_limit": 0}
-```
-
 ---
 
-### Seed Existing Data
-
-If you already have the files locally and just want to start seeding:
-```http
-POST /seed
-Content-Type: application/json
-
-{
-  "torrent_path": "/path/to/file.torrent",
-  "data_path":    "/path/to/existing/data"
-}
-```
-
----
-
-### Create `.torrent` File
-
-```http
-POST /create
-Content-Type: application/json
-
-{
-  "path":       "/absolute/path/to/folder",
-  "tracker":    "udp://tracker.opentrackr.org:1337/announce",
-  "comment":    "My release",
-  "piece_size": 0,
-  "private":    false
-}
-```
-
-Returns the `.torrent` file as a download (`application/x-bittorrent`).
-
----
-
-## Seed Server Tuning Notes
-
-The following libtorrent settings are applied at startup for seed-optimised performance:
-
-- `seed_choking_algorithm = fastest_upload` — prioritise peers with highest upload speed
-- `upload_slots_per_torrent = 8` — lebih banyak koneksi upload simultan (diterapkan via `h.set_max_uploads()` per torrent, bukan session settings)
-- `connections_limit = 500` — high peer ceiling
-- `share_ratio_limit = 0` / `seed_time_limit = 0` — never stop seeding based on ratio or time
-- LSD + DHT + UPnP + NAT-PMP enabled for maximum peer discovery
-
----
-
-## Resume Persistence
-
-Resume data is saved to `RESUME_DIR` (default `/tmp/torrents/resume`) as `<hash>.resume` files.
-
-- Torrents are **automatically restored** on server startup
-- Resume is saved on `POST /pause`, `POST /save`, and on **graceful shutdown** (`Ctrl+C` / SIGTERM)
-- To force a save without pausing: `POST /save`
-
----
-
-## License
+## 📝 License
 
 MIT

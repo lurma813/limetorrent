@@ -3,49 +3,161 @@ TorrentFlask - Full Package Torrent Manager via REST API
 Seed-server optimized build — libtorrent 2.0.x / Flask 3.x
 
 Supports: Add torrent (magnet/file), seed, create torrent, monitor,
-          remove, speed limits, recheck, ratio tracking, resume persistence,
-          re-announce, global bandwidth control.
+          remove, stop, delete, speed limits, recheck, ratio tracking,
+          resume persistence, re-announce, global bandwidth control.
+
+Usage:
+    python limetorrent.py [OPTIONS]
+
+Options:
+    --host HOST             Bind address (default: 127.0.0.1, env: HOST)
+    --port PORT             Bind port   (default: 5000,     env: PORT)
+    --download-dir DIR      Download directory (env: DOWNLOAD_DIR)
+    --torrent-dir DIR       Created .torrent output dir (env: TORRENT_DIR)
+    --resume-dir DIR        Resume data directory (env: RESUME_DIR)
+    --upload-limit BPS      Global upload limit bytes/s, 0=unlimited
+    --download-limit BPS    Global download limit bytes/s, 0=unlimited
+    --upload-slots N        Max upload slots per torrent (default: 8)
+    --connections N         Max total connections (default: 500)
+    --listen IFACE:PORT     libtorrent listen interface (default: 0.0.0.0:6881)
+    --help                  Show this help message and exit
 """
 
+import argparse
 import os
+import sys
 import time
 import threading
 import libtorrent as lt
 from flask import Flask, request, jsonify, Response, stream_with_context
 import atexit
 
-app = Flask(__name__)
+# ─── CLI argument parsing ─────────────────────────────────────────────────────
 
-# ─── Config ─────────────────────────────────────────────────────────────────
-DOWNLOAD_DIR  = os.environ.get("DOWNLOAD_DIR", "/tmp/torrents/downloads")
-TORRENT_DIR   = os.environ.get("TORRENT_DIR",  "/tmp/torrents/created")
-RESUME_DIR    = os.environ.get("RESUME_DIR",   "/tmp/torrents/resume")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="limetorrent.py",
+        description=(
+            "TorrentFlask — libtorrent 2.0.x REST API server.\n"
+            "Manages torrents via HTTP: add (magnet/file), pause, stop,\n"
+            "delete (by hash or .torrent file), seed, create, monitor, and more."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+API Endpoints (quick reference):
+  POST   /add/magnet            Add torrent via magnet link
+  POST   /add/file              Add torrent via .torrent file upload
+  GET    /list                  List all torrents
+  GET    /status/<hash>         Status of a single torrent
+  GET    /monitor               Live streaming monitor
+  POST   /pause/<hash>          Pause torrent
+  POST   /stop/<hash>           Stop torrent (pause + save resume)
+  POST   /stop/file             Stop torrent identified by .torrent file
+  POST   /resume/<hash>         Resume torrent
+  DELETE /remove/<hash>         Remove torrent (add ?delete_files=1 to wipe data)
+  DELETE /remove/file           Remove torrent identified by .torrent file
+  POST   /limit/<hash>          Set per-torrent speed limits (JSON body)
+  POST   /limit/global          Set global speed limits
+  POST   /recheck/<hash>        Force recheck
+  POST   /announce/<hash>       Force re-announce
+  GET    /trackers/<hash>       List trackers
+  POST   /create                Create .torrent from local path
+  POST   /seed                  Seed local data with .torrent file
+  GET    /magnet/<hash>         Get magnet URI
+  POST   /save                  Persist resume data for all torrents
+  GET    /health                Health check
 
-GLOBAL_UPLOAD_LIMIT   = int(os.environ.get("GLOBAL_UPLOAD_LIMIT",   0))
-GLOBAL_DOWNLOAD_LIMIT = int(os.environ.get("GLOBAL_DOWNLOAD_LIMIT", 0))
-UPLOAD_SLOTS          = int(os.environ.get("UPLOAD_SLOTS",           8))
+Examples:
+  python limetorrent.py --host 0.0.0.0 --port 8080
+  python limetorrent.py --upload-limit 1048576 --download-limit 5242880
+  curl -X POST http://localhost:5000/add/magnet -d '{"magnet":"magnet:?xt=..."}'
+  curl -X DELETE http://localhost:5000/remove/<hash>?delete_files=1
+  curl -X POST http://localhost:5000/stop/<hash>
+  curl -X POST -F torrent=@file.torrent http://localhost:5000/stop/file
+  curl -X DELETE -F torrent=@file.torrent http://localhost:5000/remove/file
+        """,
+    )
+    parser.add_argument("--host",           default=None,  metavar="HOST",
+                        help="Bind address (default: 127.0.0.1, env: HOST)")
+    parser.add_argument("--port",           default=None,  type=int, metavar="PORT",
+                        help="Bind port (default: 5000, env: PORT)")
+    parser.add_argument("--download-dir",   default=None,  metavar="DIR",
+                        help="Directory for downloaded files (env: DOWNLOAD_DIR)")
+    parser.add_argument("--torrent-dir",    default=None,  metavar="DIR",
+                        help="Directory for created .torrent files (env: TORRENT_DIR)")
+    parser.add_argument("--resume-dir",     default=None,  metavar="DIR",
+                        help="Directory for resume data (env: RESUME_DIR)")
+    parser.add_argument("--upload-limit",   default=None,  type=int, metavar="BPS",
+                        help="Global upload limit in bytes/s, 0=unlimited (env: GLOBAL_UPLOAD_LIMIT)")
+    parser.add_argument("--download-limit", default=None,  type=int, metavar="BPS",
+                        help="Global download limit in bytes/s, 0=unlimited (env: GLOBAL_DOWNLOAD_LIMIT)")
+    parser.add_argument("--upload-slots",   default=None,  type=int, metavar="N",
+                        help="Max upload slots per torrent (default: 8, env: UPLOAD_SLOTS)")
+    parser.add_argument("--connections",    default=None,  type=int, metavar="N",
+                        help="Max connections limit (default: 500, env: CONNECTIONS_LIMIT)")
+    parser.add_argument("--listen",         default=None,  metavar="IFACE:PORT",
+                        help="libtorrent listen interface (default: 0.0.0.0:6881, env: LISTEN_INTERFACES)")
+    return parser
+
+
+# ─── Parse args (only when run as __main__, not on import) ───────────────────
+
+_args = None
+if __name__ == "__main__":
+    _parser = build_parser()
+    _args   = _parser.parse_args()
+
+def _cfg(arg_val, env_key: str, default):
+    """Priority: CLI arg > env var > default."""
+    if arg_val is not None:
+        return arg_val
+    env = os.environ.get(env_key)
+    if env is not None:
+        try:
+            return type(default)(env)
+        except (ValueError, TypeError):
+            return env
+    return default
+
+def _cfg_int(arg_val, env_key: str, default: int) -> int:
+    return int(_cfg(arg_val, env_key, default))
+
+_a = _args  # shorthand
+
+DOWNLOAD_DIR  = _cfg(_a.download_dir   if _a else None, "DOWNLOAD_DIR",          "/tmp/torrents/downloads")
+TORRENT_DIR   = _cfg(_a.torrent_dir    if _a else None, "TORRENT_DIR",           "/tmp/torrents/created")
+RESUME_DIR    = _cfg(_a.resume_dir     if _a else None, "RESUME_DIR",            "/tmp/torrents/resume")
+
+GLOBAL_UPLOAD_LIMIT   = _cfg_int(_a.upload_limit   if _a else None, "GLOBAL_UPLOAD_LIMIT",   0)
+GLOBAL_DOWNLOAD_LIMIT = _cfg_int(_a.download_limit if _a else None, "GLOBAL_DOWNLOAD_LIMIT", 0)
+UPLOAD_SLOTS          = _cfg_int(_a.upload_slots   if _a else None, "UPLOAD_SLOTS",           8)
 
 for d in (DOWNLOAD_DIR, TORRENT_DIR, RESUME_DIR):
     os.makedirs(d, exist_ok=True)
 
+app = Flask(__name__)
+
 # ─── libtorrent Session ──────────────────────────────────────────────────────
+
+_listen = _cfg(_a.listen      if _a else None, "LISTEN_INTERFACES", "0.0.0.0:6881")
+_conns  = _cfg_int(_a.connections if _a else None, "CONNECTIONS_LIMIT", 500)
+
 settings = {
-    "alert_mask":           lt.alert.category_t.all_categories,
-    "enable_dht":           True,
-    "enable_lsd":           True,
-    "enable_upnp":          True,
-    "enable_natpmp":        True,
-    "listen_interfaces":    os.environ.get("LISTEN_INTERFACES", "0.0.0.0:6881"),
-    # Seed-server tuning
-    "connections_limit":    int(os.environ.get("CONNECTIONS_LIMIT", 500)),
+    "alert_mask":             lt.alert.category_t.all_categories,
+    "enable_dht":             True,
+    "enable_lsd":             True,
+    "enable_upnp":            True,
+    "enable_natpmp":          True,
+    "listen_interfaces":      _listen,
+    "connections_limit":      _conns,
     "seed_choking_algorithm": lt.seed_choking_algorithm_t.fastest_upload,
     # Keep seeding forever regardless of ratio/time (int, NOT float)
-    "share_ratio_limit":    0,
-    "seed_time_ratio_limit": 0,
-    "seed_time_limit":      0,
+    "share_ratio_limit":      0,
+    "seed_time_ratio_limit":  0,
+    "seed_time_limit":        0,
     # Global bandwidth (0 = unlimited)
-    "upload_rate_limit":    GLOBAL_UPLOAD_LIMIT,
-    "download_rate_limit":  GLOBAL_DOWNLOAD_LIMIT,
+    "upload_rate_limit":      GLOBAL_UPLOAD_LIMIT,
+    "download_rate_limit":    GLOBAL_DOWNLOAD_LIMIT,
 }
 ses = lt.session(settings)
 
@@ -76,7 +188,6 @@ def _save_resume(ih: str, h: lt.torrent_handle) -> None:
                     aih = None
                 if aih != ih:
                     continue
-                # write_resume_data_buf is the 2.0.x replacement for bencode(a.resume_data)
                 raw = lt.write_resume_data_buf(a.params)
                 with open(_resume_path(ih), "wb") as f:
                     f.write(raw)
@@ -87,7 +198,7 @@ def _save_resume(ih: str, h: lt.torrent_handle) -> None:
                 except Exception:
                     aih = None
                 if aih == ih:
-                    return  # no metadata yet, nothing to save
+                    return
         time.sleep(0.05)
 
 
@@ -101,8 +212,7 @@ def restore_torrents() -> None:
     """
     Re-add all torrents from .resume files on startup.
     lt.read_resume_data() reconstructs full add_torrent_params including
-    save_path and piece completion bitmap — so incomplete torrents resume
-    from where they left off instead of being deleted.
+    save_path and piece completion bitmap.
     """
     for fname in sorted(os.listdir(RESUME_DIR)):
         if not fname.endswith(".resume"):
@@ -111,7 +221,7 @@ def restore_torrents() -> None:
         try:
             with open(fpath, "rb") as f:
                 raw = f.read()
-            params = lt.read_resume_data(raw)   # 2.0.x counterpart of write_resume_data_buf
+            params = lt.read_resume_data(raw)
             h  = ses.add_torrent(params)
             ih = add_handle(h)
             print(f"[restore] {ih} — {h.status().name or 'unknown'}")
@@ -169,6 +279,8 @@ def torrent_info(h: lt.torrent_handle) -> dict:
         state = "seeding" if s.is_seeding else "completed"
     if s.paused:
         state = "paused"
+    if s.paused and not s.auto_managed:
+        state = "stopped"
 
     name       = s.name or (ti.name() if ti else "unknown")
     ih         = _info_hash_str(s) or "unknown"
@@ -204,7 +316,6 @@ def add_handle(h: lt.torrent_handle) -> str:
     """
     Apply per-torrent seed settings, wait for hash, register handle.
     Raises RuntimeError if hash cannot be determined within 10 s.
-    upload_slots is set via h.set_max_uploads() — NOT a settings_pack key.
     """
     h.set_max_uploads(UPLOAD_SLOTS)
     h.resume()
@@ -219,6 +330,24 @@ def add_handle(h: lt.torrent_handle) -> str:
 
     ses.remove_torrent(h)
     raise RuntimeError("Could not determine info-hash within timeout.")
+
+
+def _hash_from_torrent_bytes(raw: bytes) -> str | None:
+    """
+    Extract info-hash string from raw .torrent bytes.
+    Tries v1 SHA1 first, then v2 SHA256.
+    Uses lt.torrent_info which is the correct libtorrent 2.0.x API.
+    """
+    try:
+        info = lt.torrent_info(lt.bdecode(raw))
+        ih   = info.info_hashes()
+        if ih.has_v1():
+            return str(ih.v1)
+        if ih.has_v2():
+            return str(ih.v2)
+    except Exception:
+        pass
+    return None
 
 
 # ─── Stream renderer ─────────────────────────────────────────────────────────
@@ -362,29 +491,149 @@ def pause(hash_id):
     return jsonify({"ok": True, "state": "paused"})
 
 
-@app.route("/resume/<hash_id>", methods=["POST"])
-def resume(hash_id):
+# ─── STOP (pause + disable auto-managed) by hash ─────────────────────────────
+
+@app.route("/stop/<hash_id>", methods=["POST"])
+def stop_by_hash(hash_id):
+    """
+    Stop a torrent by info-hash.
+
+    Difference from /pause:
+      - Sets auto_managed=False so libtorrent will NOT auto-resume it.
+      - Saves resume data so a later /resume restores the torrent correctly.
+      - The torrent remains in the session (no data is lost), but all
+        connections are dropped and no bandwidth is consumed.
+
+    Uses lt.torrent_handle.unset_flags() with torrent_flags.auto_managed
+    (libtorrent 2.0.x non-deprecated API).
+    """
     h = resolve_handle(hash_id)
     if not h:
         return jsonify({"error": "not found"}), 404
-    h.resume()
-    return jsonify({"ok": True})
+    try:
+        # Disable auto-management BEFORE pausing so libtorrent won't restart it.
+        h.unset_flags(lt.torrent_flags.auto_managed)
+        h.pause()
+        _save_resume(hash_id, h)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "hash": hash_id, "state": "stopped"})
 
+
+# ─── STOP by .torrent file ───────────────────────────────────────────────────
+
+@app.route("/stop/file", methods=["POST"])
+def stop_by_file():
+    """
+    Stop a torrent identified by a .torrent file (multipart field 'torrent').
+
+    The server extracts the info-hash from the uploaded file and then
+    performs the same stop operation as /stop/<hash>.
+    """
+    if "torrent" not in request.files:
+        return jsonify({"error": "multipart field 'torrent' required"}), 400
+    raw = request.files["torrent"].read()
+    ih  = _hash_from_torrent_bytes(raw)
+    if not ih:
+        return jsonify({"error": "cannot parse info-hash from torrent file"}), 400
+
+    h = resolve_handle(ih)
+    if not h:
+        return jsonify({"error": f"torrent {ih} not found in session"}), 404
+    try:
+        h.unset_flags(lt.torrent_flags.auto_managed)
+        h.pause()
+        _save_resume(ih, h)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "hash": ih, "state": "stopped"})
+
+
+@app.route("/resume/<hash_id>", methods=["POST"])
+def resume(hash_id):
+    """
+    Resume a paused or stopped torrent.
+    Re-enables auto_managed so libtorrent can queue/start it normally.
+    """
+    h = resolve_handle(hash_id)
+    if not h:
+        return jsonify({"error": "not found"}), 404
+    try:
+        h.set_flags(lt.torrent_flags.auto_managed)
+        h.resume()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "hash": hash_id, "state": "resumed"})
+
+
+# ─── REMOVE (delete from session) by hash ────────────────────────────────────
 
 @app.route("/remove/<hash_id>", methods=["DELETE"])
-def remove(hash_id):
-    """Query param: ?delete_files=1 to also wipe downloaded data"""
+def remove_by_hash(hash_id):
+    """
+    Remove a torrent by info-hash.
+
+    Query params:
+      ?delete_files=1   Also delete all downloaded data from disk.
+
+    Uses lt.session.remove_torrent() with lt.torrent_handle.delete_files
+    flag (libtorrent 2.0.x non-deprecated API; lt.options_t.delete_files
+    is the same constant, both are valid — we use the handle-scoped flag
+    for clarity).
+    """
     h = resolve_handle(hash_id)
     if not h:
         return jsonify({"error": "not found"}), 404
     delete_files = request.args.get("delete_files", "0") == "1"
-    option       = lt.options_t.delete_files if delete_files else 0
-    ses.remove_torrent(h, option)
-    _delete_resume(hash_id)
-    with torrent_lock:
-        torrents.pop(hash_id, None)
-    return jsonify({"ok": True, "deleted_files": delete_files})
+    try:
+        option = lt.torrent_handle.delete_files if delete_files else 0
+        ses.remove_torrent(h, option)
+        _delete_resume(hash_id)
+        with torrent_lock:
+            torrents.pop(hash_id, None)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "hash": hash_id, "deleted_files": delete_files})
 
+
+# ─── REMOVE by .torrent file ─────────────────────────────────────────────────
+
+@app.route("/remove/file", methods=["DELETE"])
+def remove_by_file():
+    """
+    Remove a torrent identified by a .torrent file (multipart field 'torrent').
+
+    Query params:
+      ?delete_files=1   Also delete all downloaded data from disk.
+
+    The server extracts the info-hash from the uploaded .torrent file,
+    finds the matching handle in the session, and removes it.
+    This is useful when you have the .torrent file but not the hash.
+    """
+    if "torrent" not in request.files:
+        return jsonify({"error": "multipart field 'torrent' required"}), 400
+    raw = request.files["torrent"].read()
+    ih  = _hash_from_torrent_bytes(raw)
+    if not ih:
+        return jsonify({"error": "cannot parse info-hash from torrent file"}), 400
+
+    h = resolve_handle(ih)
+    if not h:
+        return jsonify({"error": f"torrent {ih} not found in session"}), 404
+
+    delete_files = request.args.get("delete_files", "0") == "1"
+    try:
+        option = lt.torrent_handle.delete_files if delete_files else 0
+        ses.remove_torrent(h, option)
+        _delete_resume(ih)
+        with torrent_lock:
+            torrents.pop(ih, None)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "hash": ih, "deleted_files": delete_files})
+
+
+# ─── Per-torrent speed limits ─────────────────────────────────────────────────
 
 @app.route("/limit/<hash_id>", methods=["POST"])
 def set_limit(hash_id):
@@ -575,10 +824,13 @@ atexit.register(_shutdown_save)
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", 5000))
+    host = _cfg(_args.host if _args else None, "HOST", "127.0.0.1")
+    port = _cfg_int(_args.port if _args else None, "PORT", 5000)
 
     restore_torrents()
 
     print(f"TorrentFlask (seed-server) running on http://{host}:{port}")
+    print(f"  libtorrent {lt.version} | listen: {_listen} | conns: {_conns}")
+    print(f"  upload_limit: {GLOBAL_UPLOAD_LIMIT} B/s | download_limit: {GLOBAL_DOWNLOAD_LIMIT} B/s")
+    print(f"  dirs: downloads={DOWNLOAD_DIR}  resume={RESUME_DIR}  torrents={TORRENT_DIR}")
     app.run(host=host, port=port, threaded=True)
